@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>DeveloppeTube</AssemblyName>
+    <Version>1.0.0</Version>
+    <Company>TolTem</Company>
+    <Authors>Weapon</Authors>
+    <Product>Développé de coupe de tube</Product>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>toltem.ico</ApplicationIcon>
+    <!-- pour la publication self-contained single-file -->
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+
+</Project>
