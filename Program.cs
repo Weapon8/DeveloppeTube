@@ -189,10 +189,11 @@ static class Dxf
 
         // TABLES (calques)
         P(0, "SECTION"); P(2, "TABLES");
-        P(0, "TABLE"); P(2, "LAYER"); P(70, "3");
-        Layer(P, "DECOUPE", 1);     // rouge  = contour à découper
-        Layer(P, "REPERE", 5);      // bleu   = ligne de fermeture / couture
-        Layer(P, "ANNOTATION", 8);  // gris   = texte
+        P(0, "TABLE"); P(2, "LAYER"); P(70, "4");
+        Layer(P, "DECOUPE", 7);       // blanc  = découpe (Metalix)
+        Layer(P, "RECOUVREMENT", 3);  // vert   = recouvrement (axe de pointage)
+        Layer(P, "TRACAGE", 6);       // violet = lignes de traçage
+        Layer(P, "INFOS", 8);         // gris   = annotation
         P(0, "ENDTAB"); P(0, "ENDSEC");
 
         // ENTITIES
@@ -204,22 +205,26 @@ static class Dxf
         for (int i = 0; i < n; i++) { Pd(10, m.U[i]); Pd(20, m.ZA[i]); }
         for (int i = n - 1; i >= 0; i--) { Pd(10, m.U[i]); Pd(20, m.ZB[i]); }
 
-        // repère : ligne de fermeture du tube (x = circonférence) + bord de recouvrement
+        // repères (uniquement avec recouvrement)
         if (m.Overlap > 0)
         {
-            // valeurs du profil à x = C (= identiques au bord gauche, profil périodique)
             double za0 = m.ZA[0], zb0 = m.ZB[0];
-            Line(P, Pd, "REPERE", m.SeamX, za0, m.SeamX, zb0);   // fermeture = fin du tube nominal
+            // traçage (violet) : fin du tube nominal à x = circonférence
+            Line(P, Pd, "TRACAGE", m.SeamX, za0, m.SeamX, zb0);
+            // recouvrement (vert) : axe de la patte = ligne de pointage électropointé
+            double xw = m.SeamX + m.Overlap / 2.0;
+            int idx = Math.Clamp((int)Math.Round(xw / m.Uend * (m.U.Length - 1)), 0, m.U.Length - 1);
+            Line(P, Pd, "RECOUVREMENT", xw, m.ZA[idx], xw, m.ZB[idx]);
         }
 
-        // annotation
+        // annotation (hors pièce)
         string dev = m.P.DevMoyen ? "dev-moy" : "dev-ext";
         string ang = m.P.Cut == CutMode.Single
             ? $"{m.P.AngleA:0.#}deg"
             : $"{m.P.AngleA:0.#}/{m.P.AngleB:0.#}deg";
         string ov = m.Overlap > 0 ? $" recouvr {m.Overlap:0.#}" : "";
         string txt = $"Tube O{m.P.D:0.#} {dev} L{m.P.L:0.#} {m.P.Ref} {ang}{ov}";
-        P(0, "TEXT"); P(8, "ANNOTATION"); Pd(10, 0); Pd(20, -12); P(40, "6"); P(1, txt);
+        P(0, "TEXT"); P(8, "INFOS"); Pd(10, 0); Pd(20, -12); P(40, "6"); P(1, txt);
 
         P(0, "ENDSEC"); P(0, "EOF");
         return sb.ToString();
@@ -256,6 +261,8 @@ class DrawPanel : Panel
     static readonly Color SteelDim = Color.FromArgb(0x46, 0x72, 0x96);
     static readonly Color Grid = Color.FromArgb(0x22, 0x29, 0x32);
     static readonly Color Faint = Color.FromArgb(0x6D, 0x7B, 0x8A);
+    static readonly Color Green = Color.FromArgb(0x46, 0xC9, 0x6B);
+    static readonly Color Violet = Color.FromArgb(0xA8, 0x73, 0xE6);
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -292,15 +299,20 @@ class DrawPanel : Panel
         using (var pen = new Pen(Cut, 2.2f) { LineJoin = LineJoin.Round })
             g.DrawPolygon(pen, pts.ToArray());
 
-        // ligne de fermeture / recouvrement
+        // repères de recouvrement (couleurs Metalix : violet = traçage, vert = pointage)
         if (m.Overlap > 0)
         {
-            using var pen = new Pen(Steel, 1.3f) { DashStyle = DashStyle.Dash };
-            g.DrawLine(pen, PX(m.SeamX), PY(m.ZA[0]), PX(m.SeamX), PY(m.ZB[0]));
+            using (var pv = new Pen(Violet, 1.5f) { DashStyle = DashStyle.Dash })
+                g.DrawLine(pv, PX(m.SeamX), PY(m.ZA[0]), PX(m.SeamX), PY(m.ZB[0]));
+
+            double xw = m.SeamX + m.Overlap / 2.0;
+            int idx = Math.Clamp((int)Math.Round(xw / m.Uend * (m.U.Length - 1)), 0, m.U.Length - 1);
+            using (var pg = new Pen(Green, 1.8f))
+                g.DrawLine(pg, PX(xw), PY(m.ZA[idx]), PX(xw), PY(m.ZB[idx]));
+
             using var f = new Font("Consolas", 8f);
-            using var b = new SolidBrush(Cut);
-            float xm = (PX(m.C) + PX(m.Uend)) / 2f;
-            g.DrawString($"recouvr {m.Overlap:0.#}", f, b, xm - 26, PY(0) + 6);
+            using (var bv = new SolidBrush(Violet)) g.DrawString("fin tube", f, bv, PX(m.SeamX) - 48, PY(0) + 6);
+            using (var bg = new SolidBrush(Green)) g.DrawString("pointage", f, bg, PX(xw) + 4, PY(0) + 6);
         }
 
         // cotes

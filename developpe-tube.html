@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Développé de coupe de tube → DXF</title>
+<style>
+  :root{
+    --bg:#101317; --panel:#181c22; --panel2:#1f242b; --line:#2b3views,#2b323b;
+    --line:#2b323b; --grid:#222932;
+    --ink:#eef2f6; --muted:#8c97a4; --faint:#5c6672;
+    --cut:#ff7a1a;        /* trait de coupe : métal chaud */
+    --steel:#5b9dd9;      /* cotes / acier */
+    --steel-dim:#3c6890;
+    --ok:#54c98a;
+    --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg);color:var(--ink);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+  }
+  .app{display:grid;grid-template-columns:340px 1fr;min-height:100vh}
+  @media(max-width:880px){.app{grid-template-columns:1fr}}
+
+  /* ---- panneau gauche ---- */
+  .panel{background:var(--panel);border-right:1px solid var(--line);padding:22px 20px 28px;display:flex;flex-direction:column;gap:18px}
+  .brand{display:flex;align-items:baseline;gap:10px;border-bottom:1px solid var(--line);padding-bottom:16px}
+  .brand .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.32em;color:var(--cut);text-transform:uppercase}
+  .brand .credit{font-family:var(--mono);font-size:10px;letter-spacing:.04em;color:var(--faint);margin-bottom:8px}
+  .brand .credit .heart{color:var(--cut)}
+  .brand h1{font-size:17px;margin:0;font-weight:650;letter-spacing:.01em}
+  .brand .sub{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:3px}
+
+  .group{display:flex;flex-direction:column;gap:11px}
+  .group > .gtitle{font-family:var(--mono);font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted)}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:12px;color:var(--muted)}
+  .field .unit{color:var(--faint);font-family:var(--mono);font-size:11px}
+  input[type=number],select{
+    width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+    font-family:var(--mono);font-size:14px;padding:9px 11px;border-radius:7px;outline:none;
+  }
+  input[type=number]:focus,select:focus{border-color:var(--steel);box-shadow:0 0 0 2px rgba(91,157,217,.18)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .seg button{flex:1;background:transparent;border:0;color:var(--muted);font-family:var(--mono);font-size:11.5px;padding:8px 4px;cursor:pointer}
+  .seg button.on{background:var(--steel);color:#06121d;font-weight:600}
+
+  .dl{margin-top:2px;display:flex;flex-direction:column;gap:8px}
+  .dl button.primary{
+    background:var(--cut);color:#1a0c00;border:0;border-radius:8px;padding:13px;
+    font-weight:700;font-size:14px;cursor:pointer;font-family:var(--sans);letter-spacing:.01em;
+    display:flex;align-items:center;justify-content:center;gap:9px;
+  }
+  .dl button.primary:hover{filter:brightness(1.06)}
+  .dl .fname{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:center;word-break:break-all}
+
+  /* ---- zone droite ---- */
+  .stage{display:flex;flex-direction:column;min-width:0}
+  .draw{flex:1;min-height:0;background:
+      linear-gradient(var(--grid) 1px,transparent 1px) 0 0/26px 26px,
+      linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/26px 26px,
+      radial-gradient(1200px 600px at 60% 20%,#161b21,#0d1015);
+    position:relative}
+  svg{position:absolute;inset:0;width:100%;height:100%}
+  .hint{position:absolute;left:16px;top:14px;font-family:var(--mono);font-size:10.5px;color:var(--faint);letter-spacing:.04em}
+
+  /* ---- bandeau cotes ---- */
+  .readout{border-top:1px solid var(--line);background:var(--panel);display:grid;
+    grid-template-columns:repeat(6,minmax(0,1fr)) auto;gap:0}
+  @media(max-width:880px){.readout{grid-template-columns:repeat(2,1fr) auto}}
+  .cell{padding:13px 16px;border-right:1px solid var(--line)}
+  .cell .k{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  .cell .v{font-family:var(--mono);font-size:19px;margin-top:4px;color:var(--ink)}
+  .cell .v small{color:var(--faint);font-size:12px;margin-left:3px}
+  .endview{padding:8px 16px;display:flex;align-items:center;gap:12px}
+  .endview svg{position:static;width:74px;height:74px}
+  .endview .lbl{font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.5}
+
+  .warn{color:var(--cut)}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ============ CONTRÔLES ============ -->
+  <aside class="panel">
+    <div class="brand">
+      <div>
+        <div class="credit">Développé avec <span class="heart">&#10084;</span> par Weapon · pour TolTem</div>
+        <div class="eyebrow">Tôlerie · Développé</div>
+        <h1>Coupe de tube → DXF</h1>
+        <div class="sub">mise à plat · mm · contour fermé</div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="gtitle">Tube</div>
+      <div class="row">
+        <div class="field">
+          <label>Ø extérieur <span class="unit">mm</span></label>
+          <input id="D" type="number" value="60" min="1" step="0.5">
+        </div>
+        <div class="field">
+          <label>Épaisseur <span class="unit">mm</span></label>
+          <input id="TH" type="number" value="2" min="0" step="0.5">
+        </div>
+      </div>
+      <div class="field">
+        <label>Développer sur</label>
+        <div class="seg" id="DEV">
+          <button data-v="ext" class="on">Ø extérieur (traçage)</button>
+          <button data-v="moy">Ø moyen (fibre)</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="gtitle">Longueur</div>
+      <div class="row">
+        <div class="field">
+          <label>Longueur <span class="unit">mm</span></label>
+          <input id="L" type="number" value="150" min="1" step="1">
+        </div>
+        <div class="field">
+          <label>Référence</label>
+          <select id="REF">
+            <option value="axe">à l'axe (centre)</option>
+            <option value="mini">mini (côté court)</option>
+            <option value="maxi">maxi (côté long)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="gtitle">Coupes</div>
+      <div class="field">
+        <label>Type</label>
+        <select id="MODE">
+          <option value="single">1 coupe (bout opposé droit)</option>
+          <option value="coude">2 coupes — coude (en pointe)</option>
+          <option value="paral">2 coupes — décalé (parallélogramme)</option>
+        </select>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label id="lblA">Angle de coupe <span class="unit">°</span></label>
+          <input id="AA" type="number" value="45" min="0" max="89" step="0.5">
+        </div>
+        <div class="field" id="fieldB" style="display:none">
+          <label>Angle bout 2 <span class="unit">°</span></label>
+          <input id="AB" type="number" value="30" min="0" max="89" step="0.5">
+        </div>
+      </div>
+      <div class="field">
+        <label>Position de la couture (jonction)</label>
+        <div class="seg" id="SEAM">
+          <button data-v="talon" class="on">Talon (long)</button>
+          <button data-v="cote">Côté</button>
+          <button data-v="gorge">Gorge (court)</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="gtitle">Recouvrement · électropointé</div>
+      <div class="field">
+        <label>Soudure (couture de roulage)</label>
+        <select id="JOINT">
+          <option value="aucun">Bord à bord (sans recouvrement)</option>
+          <option value="recouvr">Recouvrement (roulage)</option>
+        </select>
+      </div>
+      <div class="row" id="ovRow" style="display:none">
+        <div class="field">
+          <label>Recouvrement <span class="unit">mm</span></label>
+          <input id="OV" type="number" value="20" min="0" step="1">
+        </div>
+      </div>
+    </div>
+
+    <div class="dl">
+      <button class="primary" id="DL">⤓ Télécharger le DXF</button>
+      <div class="fname" id="FNAME">tube.dxf</div>
+    </div>
+  </aside>
+
+  <!-- ============ SCÈNE ============ -->
+  <section class="stage">
+    <div class="draw">
+      <div class="hint" id="HINT"></div>
+      <svg id="SVG" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div class="readout" id="RO">
+      <div class="cell"><div class="k">Circonférence</div><div class="v" id="oC">–</div></div>
+      <div class="cell"><div class="k">Long. maxi</div><div class="v" id="oLmax">–</div></div>
+      <div class="cell"><div class="k">Long. mini</div><div class="v" id="oLmin">–</div></div>
+      <div class="cell"><div class="k">Ø développé</div><div class="v" id="oDdev">–</div></div>
+      <div class="cell"><div class="k">Largeur dév.</div><div class="v" id="oW">–</div></div>
+      <div class="cell"><div class="k">Recouvrement</div><div class="v" id="oOV">–</div></div>
+      <div class="endview">
+        <svg id="EV" viewBox="0 0 100 100"></svg>
+        <div class="lbl">vue de bout<br>coupe à <span id="evA">45°</span></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const N = 360;                         // segments du développé
+const state = { dev:'ext', seam:'talon' };
+
+// segmented controls
+function wireSeg(elId, key, onChange){
+  const el = $(elId);
+  el.querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    el.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); state[key]=b.dataset.v; onChange();
+  });
+}
+
+// ---------- géométrie du développé ----------
+function compute(){
+  const D = Math.max(1, +$('D').value||0);
+  const th = Math.max(0, +$('TH').value||0);
+  const Ddev = state.dev==='moy' ? Math.max(0.1, D-th) : D;
+  const R = Ddev/2, C = Math.PI*Ddev;
+  const L = Math.max(0.1, +$('L').value||0);
+  const ref = $('REF').value;
+  const mode = $('MODE').value;
+  const aA = Math.min(89, Math.max(0, +$('AA').value||0));
+  const aB = Math.min(89, Math.max(0, +$('AB').value||0));
+  const phi0 = state.seam==='talon'?0 : state.seam==='cote'?Math.PI/2 : Math.PI;
+
+  const AA = (mode==='single') ? 0 : R*Math.tan(aA*Math.PI/180);
+  const AB = (mode==='single') ? R*Math.tan(aA*Math.PI/180) : R*Math.tan(aB*Math.PI/180);
+
+  // recouvrement = couture longitudinale (sens circonférentiel), prolongé périodiquement
+  const joint = $('JOINT').value;
+  const overlap = (joint==='recouvr') ? Math.max(0, +$('OV').value||0) : 0;
+  const Uend = C + overlap;
+  const M = Math.max(8, Math.round(N * Uend / C));
+
+  const us=[], zAraw=[], zBraw=[];
+  for(let i=0;i<=M;i++){
+    const u = Uend*i/M;
+    const psi = 2*Math.PI*u/C + phi0;
+    us.push(u);
+    if(mode==='single'){ zAraw.push(0);                 zBraw.push(AB*Math.cos(psi)); }
+    else if(mode==='coude'){ zAraw.push(-AA*Math.cos(psi)); zBraw.push(AB*Math.cos(psi)); }
+    else { zAraw.push(-AA*Math.cos(psi)); zBraw.push(-AB*Math.cos(psi)); }
+  }
+  // gmax/gmin sur la période de base [0,C]
+  let gmax=-1e9,gmin=1e9;
+  for(let i=0;i<=M;i++){ if(us[i]>C+1e-9) continue; const g=zBraw[i]-zAraw[i]; if(g>gmax)gmax=g; if(g<gmin)gmin=g; }
+  const Lc = ref==='axe' ? L : ref==='maxi' ? L-gmax : L-gmin;
+
+  const zA=[], zB=[];
+  let minY=1e9;
+  for(let i=0;i<=M;i++){ zA.push(zAraw[i]); zB.push(Lc+zBraw[i]); if(zA[i]<minY)minY=zA[i]; }
+  const off=-minY;
+  let Lmax=-1e9,Lmin=1e9,ymax=-1e9,iMax=0,iMin=0;
+  for(let i=0;i<=M;i++){ zA[i]+=off; zB[i]+=off; if(zB[i]>ymax)ymax=zB[i];
+    if(us[i]>C+1e-9) continue; const ln=zB[i]-zA[i];
+    if(ln>Lmax){Lmax=ln;iMax=i;} if(ln<Lmin){Lmin=ln;iMin=i;} }
+
+  return {D,Ddev,R,C,Uend,overlap,seamX:C,L,ref,mode,aA,aB,dev:state.dev,us,zA,zB,Lmax,Lmin,ymax,iMax,iMin,joint};
+}
+
+// ---------- rendu plan (SVG) ----------
+function render(m){
+  const W=1000,H=600, mx=86,my=70;          // marges pour cotes
+  const cw=m.Uend||1, ch=m.ymax||1;
+  const s = Math.min((W-2*mx)/cw,(H-2*my)/ch);
+  const ox = (W-cw*s)/2, oy=(H-ch*s)/2;
+  const PX = x => ox + x*s;
+  const PY = y => H - oy - y*s;            // flip Y (axe vers le haut)
+  const M = m.us.length-1;
+
+  // contour matière (largeur = circonférence + recouvrement)
+  let botE='', topE='';
+  for(let i=0;i<=M;i++){ botE += (i?'L':'M')+PX(m.us[i]).toFixed(2)+' '+PY(m.zA[i]).toFixed(2)+' '; }
+  for(let i=M;i>=0;i--){ topE += 'L'+PX(m.us[i]).toFixed(2)+' '+PY(m.zB[i]).toFixed(2)+' '; }
+  const outline = botE + `L${PX(m.Uend)} ${PY(m.zB[M])} ` + topE + 'Z';
+
+  // repères recouvrement : violet = fin tube (traçage), vert = axe pointage (recouvrement)
+  let extra='';
+  if(m.overlap>0){
+    const M=m.us.length-1, xw=m.C+m.overlap/2, idx=Math.max(0,Math.min(M,Math.round(xw/m.Uend*M)));
+    extra = `
+      <line x1="${PX(m.C)}" y1="${PY(m.zA[0])}" x2="${PX(m.C)}" y2="${PY(m.zB[0])}" class="trace"/>
+      <line x1="${PX(xw)}" y1="${PY(m.zA[idx])}" x2="${PX(xw)}" y2="${PY(m.zB[idx])}" class="recouvr"/>
+      <text x="${PX(m.C)}" y="${PY(0)+16}" class="tracetxt" text-anchor="middle">fin tube</text>
+      <text x="${PX(xw)}" y="${PY(0)+28}" class="recouvrtxt" text-anchor="middle">pointage</text>`;
+  }
+
+  // cotes
+  const yBot = PY(0)+30;
+  const dimCirc = `
+    <line x1="${PX(0)}" y1="${yBot}" x2="${PX(m.C)}" y2="${yBot}" class="dim"/>
+    <line x1="${PX(0)}" y1="${yBot-5}" x2="${PX(0)}" y2="${yBot+5}" class="dim"/>
+    <line x1="${PX(m.C)}" y1="${yBot-5}" x2="${PX(m.C)}" y2="${yBot+5}" class="dim"/>
+    <text x="${(PX(0)+PX(m.C))/2}" y="${yBot+18}" class="dimtxt" text-anchor="middle">⌀dév · ${m.C.toFixed(1)} mm</text>`;
+
+  function vdim(i, val, side){
+    const x = PX(m.us[i]);
+    const y0 = PY(m.zA[i]), y1 = PY(m.zB[i]);
+    const xx = side==='L' ? Math.max(PX(0)-30, 18) : Math.min(PX(m.Uend)+30, W-18);
+    return `
+      <line x1="${xx}" y1="${y0}" x2="${xx}" y2="${y1}" class="dim"/>
+      <line x1="${xx-4}" y1="${y0}" x2="${xx+4}" y2="${y0}" class="dim"/>
+      <line x1="${xx-4}" y1="${y1}" x2="${xx+4}" y2="${y1}" class="dim"/>
+      <line x1="${x}" y1="${y1}" x2="${xx}" y2="${y1}" class="dimthin"/>
+      <text x="${xx}" y="${(y0+y1)/2}" class="dimtxt" text-anchor="middle" transform="rotate(-90 ${xx} ${(y0+y1)/2})">${val.toFixed(1)}</text>`;
+  }
+  const dimMax = vdim(m.iMax, m.Lmax, 'L');
+  const dimMin = (Math.abs(m.Lmax-m.Lmin)>0.05) ? vdim(m.iMin, m.Lmin, 'R') : '';
+
+  $('SVG').innerHTML = `
+    <defs><style>
+      .blank{fill:rgba(255,122,26,.05);stroke:var(--cut);stroke-width:2.2;stroke-linejoin:round}
+      .trace{fill:none;stroke:#a873e6;stroke-width:1.4;stroke-dasharray:6 4}
+      .recouvr{fill:none;stroke:#46c96b;stroke-width:1.8}
+      .dim{stroke:var(--steel-dim);stroke-width:1}
+      .dimthin{stroke:var(--steel-dim);stroke-width:.7;stroke-dasharray:3 3}
+      .dimtxt{fill:var(--steel);font:11px var(--mono)}
+      .tracetxt{fill:#a873e6;font:10px var(--mono)}
+      .recouvrtxt{fill:#46c96b;font:10px var(--mono)}
+    </style></defs>
+    <path d="${outline}" class="blank"/>
+    ${extra}
+    ${dimCirc}${dimMax}${dimMin}`;
+
+  // vue de bout
+  $('evA').textContent = (m.mode==='single'? m.aA+'°' : m.aA+'° / '+m.aB+'°');
+  const r=34, cx=50, cy=50, t=Math.tan(m.aA*Math.PI/180);
+  $('EV').innerHTML = `
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#6d7b8a" stroke-width="1.6"/>
+    <circle cx="${cx}" cy="${cy}" r="${Math.max(2,r-4)}" fill="none" stroke="#33404c" stroke-width="1"/>
+    <line x1="${cx-r}" y1="${cy+r*t*0.45}" x2="${cx+r}" y2="${cy-r*t*0.45}" stroke="var(--cut)" stroke-width="2"/>`;
+}
+
+// ---------- export DXF (AC1015, mm, contour fermé) ----------
+function buildDXF(m){
+  const v=[];
+  const p=(c,val)=>{ v.push(String(c)); v.push(String(val)); };
+  p(0,'SECTION'); p(2,'HEADER');
+  p(9,'$ACADVER'); p(1,'AC1015');
+  p(9,'$INSUNITS'); p(70,4);              // 4 = millimètres
+  p(0,'ENDSEC');
+
+  p(0,'SECTION'); p(2,'TABLES');
+  p(0,'TABLE'); p(2,'LAYER'); p(70,4);
+  p(0,'LAYER'); p(2,'DECOUPE'); p(70,0); p(62,7); p(6,'CONTINUOUS');       // blanc = découpe
+  p(0,'LAYER'); p(2,'RECOUVREMENT'); p(70,0); p(62,3); p(6,'CONTINUOUS');  // vert = recouvrement
+  p(0,'LAYER'); p(2,'TRACAGE'); p(70,0); p(62,6); p(6,'CONTINUOUS');       // violet = traçage
+  p(0,'LAYER'); p(2,'INFOS'); p(70,0); p(62,8); p(6,'CONTINUOUS');         // gris = annotation
+  p(0,'ENDTAB'); p(0,'ENDSEC');
+
+  p(0,'SECTION'); p(2,'ENTITIES');
+  // contour matière fermé (largeur = circonférence + recouvrement)
+  const M = m.us.length-1;
+  const pts=[];
+  for(let i=0;i<=M;i++) pts.push([m.us[i], m.zA[i]]);
+  for(let i=M;i>=0;i--) pts.push([m.us[i], m.zB[i]]);
+  p(0,'LWPOLYLINE'); p(8,'DECOUPE'); p(90,pts.length); p(70,1); // 1 = fermée
+  for(const [x,y] of pts){ p(10,x.toFixed(4)); p(20,y.toFixed(4)); }
+  // repères (avec recouvrement)
+  if(m.overlap>0){
+    // traçage violet : fin du tube à x = circonférence
+    p(0,'LINE'); p(8,'TRACAGE');
+    p(10,m.C.toFixed(4)); p(20,m.zA[0].toFixed(4));
+    p(11,m.C.toFixed(4)); p(21,m.zB[0].toFixed(4));
+    // recouvrement vert : axe de pointage à x = circonférence + recouvr/2
+    const M=m.us.length-1, xw=m.C+m.overlap/2, idx=Math.max(0,Math.min(M,Math.round(xw/m.Uend*M)));
+    p(0,'LINE'); p(8,'RECOUVREMENT');
+    p(10,xw.toFixed(4)); p(20,m.zA[idx].toFixed(4));
+    p(11,xw.toFixed(4)); p(21,m.zB[idx].toFixed(4));
+  }
+  // annotation (hors pièce)
+  const ov = m.overlap>0 ? ` | recouvr ${m.overlap}` : '';
+  const txt = `Tube Ø${m.D} ${m.dev==='moy'?'(dev moy)':''} L${m.L} ${m.ref} | ${m.mode==='single'?m.aA+'°':m.aA+'°/'+m.aB+'°'}${ov}`;
+  p(0,'TEXT'); p(8,'INFOS'); p(10,'0'); p(20,(-12).toFixed(2)); p(40,'6'); p(1,txt.trim());
+  p(0,'ENDSEC'); p(0,'EOF');
+  return v.join('\n');
+}
+
+function fname(m){
+  const a = m.mode==='single'? m.aA : m.aA+'-'+m.aB;
+  const j = m.overlap>0 ? '_rec'+m.overlap : '';
+  return `tube_D${m.D}_L${m.L}_${a}deg${j}.dxf`.replace(/\s+/g,'');
+}
+
+// ---------- boucle UI ----------
+let cur;
+function update(){
+  // visibilité champ angle B + libellé
+  const mode=$('MODE').value;
+  $('fieldB').style.display = mode==='single' ? 'none' : 'flex';
+  $('lblA').innerHTML = mode==='single' ? 'Angle de coupe <span class="unit">°</span>' : 'Angle bout 1 <span class="unit">°</span>';
+
+  // visibilité champ recouvrement
+  $('ovRow').style.display = $('JOINT').value==='recouvr' ? 'grid' : 'none';
+
+  cur = compute();
+  render(cur);
+  $('oC').innerHTML   = cur.C.toFixed(1)+'<small>mm</small>';
+  $('oLmax').innerHTML= cur.Lmax.toFixed(1)+'<small>mm</small>';
+  $('oLmin').innerHTML= cur.Lmin.toFixed(1)+'<small>mm</small>';
+  $('oDdev').innerHTML= cur.Ddev.toFixed(1)+'<small>mm</small>';
+  $('oW').innerHTML   = cur.Uend.toFixed(1)+'<small>mm</small>';
+  $('oOV').innerHTML  = cur.overlap>0 ? `${cur.overlap}<small>mm</small>` : '—';
+  $('FNAME').textContent = fname(cur);
+  const warn = (cur.aA>=89||cur.aB>=89) ? ' · ⚠ angle ≥89° = développé infini' : '';
+  const jt = cur.overlap>0 ? ' · violet = fin tube · vert = pointage' : '';
+  $('HINT').innerHTML = `développé · trait orange = découpe${jt}${warn}`;
+}
+
+$('DL').onclick = ()=>{
+  const dxf = buildDXF(cur);
+  const blob = new Blob([dxf], {type:'application/dxf'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download=fname(cur);
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1500);
+};
+
+['D','TH','L','REF','MODE','AA','AB','JOINT','OV'].forEach(id=>{ $(id).addEventListener('input',update); $(id).addEventListener('change',update); });
+wireSeg('DEV','dev',update);
+wireSeg('SEAM','seam',update);
+window.addEventListener('resize',()=>render(cur));
+update();
+</script>
+</body>
+</html>

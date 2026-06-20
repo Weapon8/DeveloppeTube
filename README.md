@@ -10,7 +10,11 @@ Appli Windows (WinForms / .NET 8) pour mettre à plat la découpe d'un tube et e
 - Types de coupe : 1 coupe (bout droit), coude (2 coupes en pointe), parallélogramme (2 biais parallèles).
 - **Recouvrement de soudure (roulage)** : bande ajoutée dans le sens **circonférentiel** (le développé passe de πØ à πØ + recouvrement), sur **toute la hauteur**, pour pointer la couture après roulage. Le profil se prolonge périodiquement (la matière de recouvrement épouse la surface du tube).
 - Aperçu plan en direct + cotes (circonférence, longueurs maxi/mini, largeur développée).
-- Export DXF en **mm**, contour fermé sur le calque `DECOUPE`, ligne de fermeture du tube sur le calque `REPERE`, annotation sur `ANNOTATION`.
+- Export DXF en **mm**, contour fermé, calques par couleur **compatibles Metalix / cncKad** :
+  - `DECOUPE` → **blanc** (ACI 7) : contour à découper (patte de recouvrement comprise).
+  - `RECOUVREMENT` → **vert** (ACI 3) : axe de la patte (ligne de pointage électropointé), quand recouvrement.
+  - `TRACAGE` → **violet** (ACI 6) : ligne de fin de tube (repère d'alignement au roulage).
+  - `INFOS` → **gris** (ACI 8) : annotation (hors pièce, ignorée par Metalix).
 
 ## Compiler / lancer
 
