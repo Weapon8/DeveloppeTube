@@ -415,6 +415,14 @@ class MainForm : Form
 
     public MainForm()
     {
+        // --- Base d'autoscale DPI ---
+        // Form dessinee a 96 dpi (Segoe UI 9pt = 7x15). AutoScaleMode.Font scale ENSEMBLE
+        // largeurs fixes + police vers 120/144 dpi (125%/150%) et l'inverse a 80%.
+        // A poser AVANT toute creation de controle.
+        AutoScaleDimensions = new SizeF(7f, 15f);
+        AutoScaleMode = AutoScaleMode.Font;
+
+        SuspendLayout();
         Text = "Développé de coupe de tube → DXF   ·   made with ♥ by Weapon for TolTem";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(980, 640);
@@ -426,6 +434,7 @@ class MainForm : Form
         BuildUi();
         LoadSettings();
         FormClosing += (_, _) => SaveSettings();
+        ResumeLayout(false);
     }
 
     const int INNER = 262;
@@ -729,7 +738,9 @@ class MainForm : Form
         {
             Text = title, FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(330, 110),
-            MaximizeBox = false, MinimizeBox = false, BackColor = PanelBg, ForeColor = Ink
+            MaximizeBox = false, MinimizeBox = false, BackColor = PanelBg, ForeColor = Ink,
+            Font = new Font("Segoe UI", 9f),
+            AutoScaleDimensions = new SizeF(7f, 15f), AutoScaleMode = AutoScaleMode.Font
         };
         var tb = new TextBox
         {

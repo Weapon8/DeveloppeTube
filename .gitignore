@@ -361,3 +361,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Executables publies TolTem (self-contained win-x64)
+exe/
+*.exe
