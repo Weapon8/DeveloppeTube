@@ -169,6 +169,93 @@ static class Geometry
 }
 
 // ---------------------------------------------------------------------
+//  ArcFit : polyligne dense -> chaîne d'arcs TANGENTS (bulges DXF)
+//  Pour le grignotage continu (AutoPunch / Metalix) : un arc = un passage
+//  de poinçon continu, au lieu d'un coup par mini-segment.
+//  Classe commune, à réutiliser telle quelle dans les autres outils TolTem.
+// ---------------------------------------------------------------------
+static class ArcFit
+{
+    public const double DefaultTol = 0.03;     // mm, écart max à la courbe d'origine
+    const double MaxSweepHalf = 80.0 * Math.PI / 180.0; // |alpha| max par arc (balayage < 160°)
+
+    /// <summary>Sommets (X, Y, Bulge) ; le bulge d'un sommet s'applique au segment vers le suivant.</summary>
+    public static List<(double X, double Y, double B)> Fit(IReadOnlyList<(double X, double Y)> pts, double tol = DefaultTol)
+    {
+        var res = new List<(double X, double Y, double B)>();
+        int n = pts.Count;
+        if (n == 0) return res;
+        if (n == 1) { res.Add((pts[0].X, pts[0].Y, 0)); return res; }
+
+        // tangente de départ = direction du premier segment non nul
+        double tx = 0, ty = 0;
+        for (int k = 1; k < n; k++)
+        {
+            double ddx = pts[k].X - pts[0].X, ddy = pts[k].Y - pts[0].Y;
+            double l = Math.Sqrt(ddx * ddx + ddy * ddy);
+            if (l > 1e-9) { tx = ddx / l; ty = ddy / l; break; }
+        }
+
+        int i = 0;
+        while (i < n - 1)
+        {
+            double x0 = pts[i].X, y0 = pts[i].Y;
+            int best = -1; double bestAlpha = 0;
+
+            for (int j = i + 1; j < n; j++)
+            {
+                double dx = pts[j].X - x0, dy = pts[j].Y - y0;
+                double c = Math.Sqrt(dx * dx + dy * dy);
+                if (c < 1e-9) { if (best < 0) continue; else break; }
+                double alpha = Math.Atan2(tx * dy - ty * dx, tx * dx + ty * dy);
+                if (Math.Abs(alpha) > MaxSweepHalf) break;
+
+                bool ok = true;
+                if (Math.Abs(alpha) < 1e-7)
+                {
+                    for (int k = i + 1; k < j && ok; k++)
+                        if (Math.Abs(tx * (pts[k].Y - y0) - ty * (pts[k].X - x0)) > tol) ok = false;
+                }
+                else
+                {
+                    double r = c / (2 * Math.Sin(alpha));       // signé : >0 = arc vers la gauche
+                    double cx = x0 - ty * r, cy = y0 + tx * r;
+                    double ar = Math.Abs(r);
+                    for (int k = i + 1; k < j && ok; k++)
+                    {
+                        double ex = pts[k].X - cx, ey = pts[k].Y - cy;
+                        if (Math.Abs(Math.Sqrt(ex * ex + ey * ey) - ar) > tol) ok = false;
+                    }
+                }
+                if (!ok) break;
+                best = j; bestAlpha = alpha;
+            }
+
+            if (best < 0)
+            {
+                // angle vif (coin) : segment droit, la tangente repart du segment
+                best = i + 1;
+                while (best < n - 1 && Math.Abs(pts[best].X - x0) + Math.Abs(pts[best].Y - y0) < 1e-9) best++;
+                double dx = pts[best].X - x0, dy = pts[best].Y - y0;
+                double c = Math.Sqrt(dx * dx + dy * dy);
+                res.Add((x0, y0, 0));
+                if (c > 1e-9) { tx = dx / c; ty = dy / c; }
+            }
+            else
+            {
+                res.Add((x0, y0, Math.Tan(bestAlpha / 2)));
+                double ca = Math.Cos(2 * bestAlpha), sa = Math.Sin(2 * bestAlpha);
+                double ntx = tx * ca - ty * sa, nty = tx * sa + ty * ca;
+                tx = ntx; ty = nty;
+            }
+            i = best;
+        }
+        res.Add((pts[n - 1].X, pts[n - 1].Y, 0));
+        return res;
+    }
+}
+
+// ---------------------------------------------------------------------
 //  Export DXF (AC1015, millimètres, contour fermé)
 // ---------------------------------------------------------------------
 static class Dxf
@@ -199,11 +286,23 @@ static class Dxf
         // ENTITIES
         P(0, "SECTION"); P(2, "ENTITIES");
 
+        // contour fermé : bord A (gauche -> droite) puis bord B (droite -> gauche),
+        // chaque bord converti en chaîne d'arcs tangents (bulges) = grignotage continu
         int n = m.U.Length;
-        int verts = 2 * n;
-        P(0, "LWPOLYLINE"); P(8, "DECOUPE"); P(90, verts.ToString(Inv)); P(70, "1"); // 1 = fermée
-        for (int i = 0; i < n; i++) { Pd(10, m.U[i]); Pd(20, m.ZA[i]); }
-        for (int i = n - 1; i >= 0; i--) { Pd(10, m.U[i]); Pd(20, m.ZB[i]); }
+        var ptsA = new List<(double X, double Y)>(n);
+        var ptsB = new List<(double X, double Y)>(n);
+        for (int i = 0; i < n; i++) ptsA.Add((m.U[i], m.ZA[i]));
+        for (int i = n - 1; i >= 0; i--) ptsB.Add((m.U[i], m.ZB[i]));
+
+        var chain = ArcFit.Fit(ptsA);
+        chain.AddRange(ArcFit.Fit(ptsB));
+
+        P(0, "LWPOLYLINE"); P(8, "DECOUPE"); P(90, chain.Count.ToString(Inv)); P(70, "1"); // 1 = fermée
+        foreach (var v in chain)
+        {
+            Pd(10, v.X); Pd(20, v.Y);
+            if (Math.Abs(v.B) > 1e-9) P(42, v.B.ToString("0.########", Inv));
+        }
 
         // repères (uniquement avec recouvrement)
         if (m.Overlap > 0)
