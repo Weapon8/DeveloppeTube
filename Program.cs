@@ -52,6 +52,11 @@ class Params
     public bool OverlapOn = false;
     public double Overlap = 20;   // mm, sens circonférentiel (couture)
 
+    // contour DXF (grignotage Metalix) : mêmes réglages que CoudeDev
+    public double TolArc = 0.2;     // mm, écart maxi à la courbe (= dentelure Metalix)
+    public double TolArcMax = 0.5;  // mm, montée auto si l'arc mini ne tient pas
+    public double ArcMini = 20;     // mm, aucun arc plus court (= Ø du rond de grignotage)
+
     public Params Clone() => (Params)MemberwiseClone();
 }
 
@@ -72,6 +77,12 @@ class Model
     public int IMax, IMin;
     public bool BotIsCut;
     public Params P = new();
+
+    // bords exacts z(u) et pente dz/du (A = bas, B = haut) : servent au contour DXF
+    public Func<double, double> FA = _ => 0, FB = _ => 0, DA = _ => 0, DB = _ => 0;
+    // contour DXF fermé en arcs tangents (bord A, droite, bord B, droite) + bilans
+    public List<BVertex> Contour = new();
+    public ArcFit.Stats StatA, StatB;
 }
 
 // ---------------------------------------------------------------------
@@ -156,103 +167,75 @@ static class Geometry
             if (ln < Lmin) { Lmin = ln; iMin = i; }
         }
 
-        return new Model
+        // bords exacts (mêmes formules que les échantillons ci-dessus)
+        double kp = 2 * Math.PI / C;
+        double Psi(double u) => kp * u + phi0;
+        Func<double, double> fa, da, fb, db;
+        if (p.Cut == CutMode.Single) { fa = _ => off; da = _ => 0; }
+        else { fa = u => -AA * Math.Cos(Psi(u)) + off; da = u => AA * kp * Math.Sin(Psi(u)); }
+        double sB = p.Cut == CutMode.Parallelogramme ? -1 : 1;
+        fb = u => Lc + sB * AB * Math.Cos(Psi(u)) + off;
+        db = u => -sB * AB * kp * Math.Sin(Psi(u));
+
+        var m = new Model
         {
             Ddev = Ddev, R = R, C = C, Uend = Uend, Overlap = overlap, SeamX = C,
             U = U, ZA = ZA, ZB = ZB,
             Lmax = Lmax, Lmin = Lmin, Ymax = ymax,
-            IMax = iMax, IMin = iMin, BotIsCut = botIsCut, P = p
+            IMax = iMax, IMin = iMin, BotIsCut = botIsCut, P = p,
+            FA = fa, DA = da, FB = fb, DB = db
         };
+        BuildContour(m);
+        return m;
+    }
+
+    /// <summary>Contour DXF fermé : bord A (gauche -> droite) en arcs tangents, bord droit,
+    /// bord B (droite -> gauche) en arcs tangents, bord gauche (couture). Peu d'arcs longs,
+    /// aucun plus court que l'arc mini, écart ≤ tolérance (ArcFit.FitLong, comme CoudeDev).</summary>
+    public static void BuildContour(Model m)
+    {
+        var p = m.P;
+        Sample(m.FA, m.DA, 0, m.Uend, out var PA, out var TA);
+        Sample(m.FB, m.DB, m.Uend, 0, out var PB, out var TB);
+        var cA = ArcFit.FitLong(PA, TA, p.TolArc, p.TolArcMax, p.ArcMini, out var sA);
+        var cB = ArcFit.FitLong(PB, TB, p.TolArc, p.TolArcMax, p.ArcMini, out var sB);
+        var cont = new List<BVertex>(cA.Count + cB.Count + 2);
+        cont.AddRange(cA);
+        cont.Add(new BVertex(PA[PA.Length - 1], 0));   // bord droit (bout de patte / fin du développé)
+        cont.AddRange(cB);
+        cont.Add(new BVertex(PB[PB.Length - 1], 0));   // bord gauche (couture), referme sur le 1er point
+        m.Contour = cont; m.StatA = sA; m.StatB = sB;
+    }
+
+    /// <summary>Bord z(u) échantillonné à pas de LONGUEUR constant (~0,5 mm) avec la tangente
+    /// exacte, dans le sens u0 -> u1 (les pentes raides restent aussi bien suivies que le reste).</summary>
+    static void Sample(Func<double, double> z, Func<double, double> dz, double u0, double u1, out V2[] P, out V2[] T)
+    {
+        const int NF = 20000;                      // grille fine en u pour la longueur cumulée
+        var uu = new double[NF + 1]; var ss = new double[NF + 1];
+        double px = u0, py = z(u0); uu[0] = u0;
+        for (int i = 1; i <= NF; i++)
+        {
+            double u = u0 + (u1 - u0) * i / NF, y = z(u);
+            ss[i] = ss[i - 1] + Math.Sqrt((u - px) * (u - px) + (y - py) * (y - py));
+            uu[i] = u; px = u; py = y;
+        }
+        double len = ss[NF];
+        int n = (int)Clamp(Math.Ceiling(len / 0.5), 200, 40000);
+        double sg = u1 >= u0 ? 1 : -1;
+        P = new V2[n + 1]; T = new V2[n + 1];
+        for (int k = 0, j = 0; k <= n; k++)
+        {
+            double s = len * k / n;
+            while (j < NF - 1 && ss[j + 1] < s) j++;
+            double f = ss[j + 1] > ss[j] ? Clamp((s - ss[j]) / (ss[j + 1] - ss[j]), 0, 1) : 0;
+            double u = k == 0 ? u0 : k == n ? u1 : uu[j] + (uu[j + 1] - uu[j]) * f;
+            P[k] = new V2(u, z(u));
+            T[k] = new V2(sg, sg * dz(u)).Unit();
+        }
     }
 
     static double Clamp(double v, double a, double b) => v < a ? a : (v > b ? b : v);
-}
-
-// ---------------------------------------------------------------------
-//  ArcFit : polyligne dense -> chaîne d'arcs TANGENTS (bulges DXF)
-//  Pour le grignotage continu (AutoPunch / Metalix) : un arc = un passage
-//  de poinçon continu, au lieu d'un coup par mini-segment.
-//  Classe commune, à réutiliser telle quelle dans les autres outils TolTem.
-// ---------------------------------------------------------------------
-static class ArcFit
-{
-    public const double DefaultTol = 0.03;     // mm, écart max à la courbe d'origine
-    const double MaxSweepHalf = 80.0 * Math.PI / 180.0; // |alpha| max par arc (balayage < 160°)
-
-    /// <summary>Sommets (X, Y, Bulge) ; le bulge d'un sommet s'applique au segment vers le suivant.</summary>
-    public static List<(double X, double Y, double B)> Fit(IReadOnlyList<(double X, double Y)> pts, double tol = DefaultTol)
-    {
-        var res = new List<(double X, double Y, double B)>();
-        int n = pts.Count;
-        if (n == 0) return res;
-        if (n == 1) { res.Add((pts[0].X, pts[0].Y, 0)); return res; }
-
-        // tangente de départ = direction du premier segment non nul
-        double tx = 0, ty = 0;
-        for (int k = 1; k < n; k++)
-        {
-            double ddx = pts[k].X - pts[0].X, ddy = pts[k].Y - pts[0].Y;
-            double l = Math.Sqrt(ddx * ddx + ddy * ddy);
-            if (l > 1e-9) { tx = ddx / l; ty = ddy / l; break; }
-        }
-
-        int i = 0;
-        while (i < n - 1)
-        {
-            double x0 = pts[i].X, y0 = pts[i].Y;
-            int best = -1; double bestAlpha = 0;
-
-            for (int j = i + 1; j < n; j++)
-            {
-                double dx = pts[j].X - x0, dy = pts[j].Y - y0;
-                double c = Math.Sqrt(dx * dx + dy * dy);
-                if (c < 1e-9) { if (best < 0) continue; else break; }
-                double alpha = Math.Atan2(tx * dy - ty * dx, tx * dx + ty * dy);
-                if (Math.Abs(alpha) > MaxSweepHalf) break;
-
-                bool ok = true;
-                if (Math.Abs(alpha) < 1e-7)
-                {
-                    for (int k = i + 1; k < j && ok; k++)
-                        if (Math.Abs(tx * (pts[k].Y - y0) - ty * (pts[k].X - x0)) > tol) ok = false;
-                }
-                else
-                {
-                    double r = c / (2 * Math.Sin(alpha));       // signé : >0 = arc vers la gauche
-                    double cx = x0 - ty * r, cy = y0 + tx * r;
-                    double ar = Math.Abs(r);
-                    for (int k = i + 1; k < j && ok; k++)
-                    {
-                        double ex = pts[k].X - cx, ey = pts[k].Y - cy;
-                        if (Math.Abs(Math.Sqrt(ex * ex + ey * ey) - ar) > tol) ok = false;
-                    }
-                }
-                if (!ok) break;
-                best = j; bestAlpha = alpha;
-            }
-
-            if (best < 0)
-            {
-                // angle vif (coin) : segment droit, la tangente repart du segment
-                best = i + 1;
-                while (best < n - 1 && Math.Abs(pts[best].X - x0) + Math.Abs(pts[best].Y - y0) < 1e-9) best++;
-                double dx = pts[best].X - x0, dy = pts[best].Y - y0;
-                double c = Math.Sqrt(dx * dx + dy * dy);
-                res.Add((x0, y0, 0));
-                if (c > 1e-9) { tx = dx / c; ty = dy / c; }
-            }
-            else
-            {
-                res.Add((x0, y0, Math.Tan(bestAlpha / 2)));
-                double ca = Math.Cos(2 * bestAlpha), sa = Math.Sin(2 * bestAlpha);
-                double ntx = tx * ca - ty * sa, nty = tx * sa + ty * ca;
-                tx = ntx; ty = nty;
-            }
-            i = best;
-        }
-        res.Add((pts[n - 1].X, pts[n - 1].Y, 0));
-        return res;
-    }
 }
 
 // ---------------------------------------------------------------------
@@ -266,7 +249,7 @@ static class Dxf
     {
         var sb = new StringBuilder();
         void P(int code, string val) { sb.Append(code).Append('\n').Append(val).Append('\n'); }
-        void Pd(int code, double val) { P(code, val.ToString("0.####", Inv)); }
+        void Pd(int code, double val) { P(code, val.ToString("0.######", Inv)); }
 
         // HEADER
         P(0, "SECTION"); P(2, "HEADER");
@@ -286,22 +269,18 @@ static class Dxf
         // ENTITIES
         P(0, "SECTION"); P(2, "ENTITIES");
 
-        // contour fermé : bord A (gauche -> droite) puis bord B (droite -> gauche),
-        // chaque bord converti en chaîne d'arcs tangents (bulges) = grignotage continu
-        int n = m.U.Length;
-        var ptsA = new List<(double X, double Y)>(n);
-        var ptsB = new List<(double X, double Y)>(n);
-        for (int i = 0; i < n; i++) ptsA.Add((m.U[i], m.ZA[i]));
-        for (int i = n - 1; i >= 0; i--) ptsB.Add((m.U[i], m.ZB[i]));
-
-        var chain = ArcFit.Fit(ptsA);
-        chain.AddRange(ArcFit.Fit(ptsB));
+        // contour fermé : bord A (gauche -> droite) puis bord B (droite -> gauche), chaque bord
+        // en PEU d'arcs tangents LONGS (≥ arc mini, écart ≤ tolérance) = grignotage continu
+        if (m.Contour.Count == 0) Geometry.BuildContour(m);
+        var chain = m.Contour;
 
         P(0, "LWPOLYLINE"); P(8, "DECOUPE"); P(90, chain.Count.ToString(Inv)); P(70, "1"); // 1 = fermée
         foreach (var v in chain)
         {
-            Pd(10, v.X); Pd(20, v.Y);
-            if (Math.Abs(v.B) > 1e-9) P(42, v.B.ToString("0.########", Inv));
+            Pd(10, v.P.X); Pd(20, v.P.Y);
+            // garde-fou : jamais d'arc quasi plat au DXF (cncKad en fait un cercle complet)
+            double b = ArcFit.IsFlat(v.Bulge) ? 0.0 : v.Bulge;
+            if (b != 0.0) P(42, b.ToString("0.##############", Inv));
         }
 
         // repères (uniquement avec recouvrement)
@@ -397,6 +376,14 @@ class DrawPanel : Panel
             g.FillPolygon(fill, pts.ToArray());
         using (var pen = new Pen(Cut, 2.2f) { LineJoin = LineJoin.Round })
             g.DrawPolygon(pen, pts.ToArray());
+
+        // jonctions des arcs du contour DXF (1 point = début d'un arc ou d'une droite)
+        using (var bj = new SolidBrush(Color.White))
+            foreach (var v in m.Contour)
+                g.FillEllipse(bj, PX(v.P.X) - 2.5f, PY(v.P.Y) - 2.5f, 5f, 5f);
+        using (var fj = new Font("Consolas", 8f))
+        using (var bf = new SolidBrush(Faint))
+            g.DrawString("points blancs = jonctions des arcs du DXF", fj, bf, 10, H - 20);
 
         // repères de recouvrement (couleurs Metalix : violet = traçage, vert = pointage)
         if (m.Overlap > 0)
@@ -494,6 +481,8 @@ class MainForm : Form
 
     DrawPanel _draw = null!;
     NumericUpDown _nD = null!, _nTh = null!, _nL = null!, _nA = null!, _nB = null!, _nOv = null!;
+    NumericUpDown _nTol = null!, _nTolMax = null!, _nArcMini = null!;
+    Label _oArcs = null!;
     ComboBox _cDev = null!, _cRef = null!, _cCut = null!, _cSeam = null!;
     CheckBox _chkOv = null!;
     Label _lblB = null!;
@@ -572,6 +561,17 @@ class MainForm : Form
         flow.Controls.Add(_chkOv);
         _nOv = AddNum(flow, "Recouvrement (mm)", (decimal)P.Overlap, 0, 1000, 1, 1m, out _);
 
+        AddTitle(flow, "DXF · GRIGNOTAGE METALIX");
+        _nTol = AddNum(flow, "Tolérance contour (mm) = dentelure", (decimal)P.TolArc, 0.01m, 2, 2, 0.05m, out _);
+        _nTolMax = AddNum(flow, "Tolérance maxi auto (mm)", (decimal)P.TolArcMax, 0.01m, 5, 2, 0.05m, out _);
+        _nArcMini = AddNum(flow, "Arc mini = Ø rond (mm)", (decimal)P.ArcMini, 0, 200, 0, 1m, out _);
+        _oArcs = new Label
+        {
+            ForeColor = Muted, AutoSize = true, MaximumSize = new Size(INNER, 0),
+            Font = new Font("Consolas", 8.5f), Margin = new Padding(0, 6, 0, 2)
+        };
+        flow.Controls.Add(_oArcs);
+
         AddTitle(flow, "PRÉRÉGLAGES");
         _cPreset = AddCombo(flow, "Préréglage enregistré", new[] { "—" });
         var pr = new FlowLayoutPanel
@@ -640,7 +640,7 @@ class MainForm : Form
         Controls.Add(left);     // panneau gauche (pleine hauteur)
 
         // événements
-        foreach (var n in new[] { _nD, _nTh, _nL, _nA, _nB, _nOv }) n.ValueChanged += (_, _) => Recompute();
+        foreach (var n in new[] { _nD, _nTh, _nL, _nA, _nB, _nOv, _nTol, _nTolMax, _nArcMini }) n.ValueChanged += (_, _) => Recompute();
         foreach (var c in new[] { _cDev, _cRef, _cCut, _cSeam }) c.SelectedIndexChanged += (_, _) => Recompute();
         _chkOv.CheckedChanged += (_, _) => Recompute();
     }
@@ -716,6 +716,9 @@ class MainForm : Form
         P.Seam = (Seam)_cSeam.SelectedIndex;
         P.OverlapOn = _chkOv.Checked;
         P.Overlap = (double)_nOv.Value;
+        P.TolArc = (double)_nTol.Value;
+        P.TolArcMax = Math.Max(P.TolArc, (double)_nTolMax.Value);
+        P.ArcMini = (double)_nArcMini.Value;
     }
 
     void Recompute()
@@ -738,6 +741,20 @@ class MainForm : Form
         _oDdev.Text = $"{_model.Ddev:0.0}";
         _oW.Text = $"{_model.Uend:0.0}";
         _oOv.Text = _model.Overlap > 0 ? $"{_model.Overlap:0.#}" : "—";
+
+        // bilan du contour DXF
+        var c = _model.Contour; var a = _model.StatA; var b = _model.StatB;
+        int arcs = c.Count(v => v.Bulge != 0), droites = c.Count(v => v.Bulge == 0) - 2;
+        double court = Math.Min(a.MinLen, b.MinLen), ecart = Math.Max(a.MaxDev, b.MaxDev);
+        double tolUt = Math.Max(a.UsedTol, b.UsedTol), miniUt = Math.Min(a.UsedMin, b.UsedMin);
+        string txt = $"Contour DXF : {arcs} arcs" + (droites > 0 ? $" + {droites} droite{(droites > 1 ? "s" : "")}" : "")
+                   + $"\nplus court {court:0} mm · écart ≤ {ecart:0.00} mm";
+        if (tolUt > P.TolArc + 1e-9) txt += $"\ntolérance montée à {tolUt:0.00} pour tenir l'arc mini";
+        if (miniUt < P.ArcMini - 1e-9) txt += $"\narc mini impossible : {miniUt:0} mm (tube trop cintré)";
+        bool horsTol = ecart > P.TolArcMax + 0.01;
+        if (horsTol) txt += "\nécart > tolérance maxi : coupe trop inclinée, contrôle le DXF";
+        _oArcs.Text = txt;
+        _oArcs.ForeColor = (miniUt < P.ArcMini - 1e-9 || horsTol) ? Color.FromArgb(0xFF, 0x6E, 0x5A) : Muted;
     }
 
     void ExportDxf()
@@ -821,6 +838,9 @@ class MainForm : Form
         _nA.Value = Clamp((decimal)p.AngleA, _nA.Minimum, _nA.Maximum);
         _nB.Value = Clamp((decimal)p.AngleB, _nB.Minimum, _nB.Maximum);
         _nOv.Value = Clamp((decimal)p.Overlap, _nOv.Minimum, _nOv.Maximum);
+        _nTol.Value = Clamp((decimal)p.TolArc, _nTol.Minimum, _nTol.Maximum);
+        _nTolMax.Value = Clamp((decimal)p.TolArcMax, _nTolMax.Minimum, _nTolMax.Maximum);
+        _nArcMini.Value = Clamp((decimal)p.ArcMini, _nArcMini.Minimum, _nArcMini.Maximum);
         _cDev.SelectedIndex = p.DevMoyen ? 1 : 0;
         _cRef.SelectedIndex = Math.Clamp((int)p.Ref, 0, _cRef.Items.Count - 1);
         _cCut.SelectedIndex = Math.Clamp((int)p.Cut, 0, _cCut.Items.Count - 1);
